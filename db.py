@@ -10,7 +10,8 @@ DB_PATH = DATA_DIR / 'alfagift.db'
 DEFAULT_SETTINGS = {
     'categories': [],        # id kategori utama yang dipindai; kosong = semua
     'delay': 3.0,            # jeda antar request (detik)
-    'max_requests': 150,     # batas request per putaran (±60 cukup untuk seluruh katalog)
+    'max_requests': 150,     # batas request listing per putaran (±50 cukup untuk seluruh katalog)
+    'detail_checks': 600,    # batas ambil detail (barcode & brand, 1 request/produk) per putaran
     'city': '',              # kota alamat akun (diisi crawler)
     'account': None,         # {address, city, store_code} dari akun Alfagift
     'schedule': ['06:30'],   # jam crawl otomatis setiap hari (waktu server)
@@ -47,8 +48,11 @@ CREATE TABLE IF NOT EXISTS products (
   city_qty      INTEGER, -- stok di toko Alfamart akun
   city_stores   TEXT,    -- JSON [[nama toko, stok]]
   city_checked  TEXT,    -- kapan stok terakhir dicek
-  plu           TEXT     -- kode PLU Alfamart
+  plu           TEXT,    -- kode PLU Alfamart
+  barcode       TEXT,    -- dari detail produk (diambil sekali per produk)
+  detail_checked TEXT    -- kapan detail (barcode/brand) diambil
 );
+CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_cat ON products(category_path);
 CREATE INDEX IF NOT EXISTS idx_products_change ON products(last_change);
 -- Satu baris per perubahan harga/stok (harga berlaku sampai baris berikutnya)
@@ -84,7 +88,7 @@ def connect():
     con.executescript(SCHEMA)
     cols = {r['name'] for r in con.execute('PRAGMA table_info(products)')}
     for col, typ in (('city_name', 'TEXT'), ('city_qty', 'INTEGER'), ('city_stores', 'TEXT'), ('city_checked', 'TEXT'),
-                     ('plu', 'TEXT')):
+                     ('plu', 'TEXT'), ('barcode', 'TEXT'), ('detail_checked', 'TEXT')):
         if col not in cols:
             con.execute(f'ALTER TABLE products ADD COLUMN {col} {typ}')
     if 'stock_checks' not in {r['name'] for r in con.execute('PRAGMA table_info(runs)')}:

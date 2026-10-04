@@ -58,8 +58,8 @@
     $('#status-line').textContent = status.running
       ? '⏳ Crawler sedang berjalan…'
       : (last ? `Crawl terakhir ${ago(last.finished || last.started)} · ${RUN_STATUS[last.status]?.[0] || last.status}` : 'Belum pernah crawl') + nextTxt;
-    $('#run-btn').disabled = status.running;
-    $('#run-btn').textContent = status.running ? 'Sedang berjalan…' : 'Jalankan sekarang';
+    $('#run-btn').disabled = status.running || status.blackout;
+    $('#run-btn').textContent = status.running ? 'Sedang berjalan…' : status.blackout ? 'Downtime 23.00–06.00' : 'Jalankan sekarang';
     $('#stats').innerHTML = [
       ['Produk tersimpan', num(c.total)],
       ['Tersedia', num(c.in_stock), c.total ? `${Math.round((c.in_stock || 0) / c.total * 100)}%` : ''],
@@ -70,8 +70,15 @@
     ].map(([k, v, sub]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v} ${sub ? `<small>${sub}</small>` : ''}</div></div>`).join('');
     renderRuns(runs);
     $('#f-city-label').textContent = s.city ? `Ada stok di ${s.city}` : 'Ada stok di kota';
-    $('#store-notice').hidden = !s.city || c.in_city > 0 || status.running;
-    $('#store-notice').innerHTML = `Belum ada data. Klik <b>Jalankan sekarang</b> untuk mengambil semua produk Alfagift dengan harga toko ${esc(s.city)} (±3–4 menit).`;
+    const noBarcode = (c.total || 0) - (c.with_detail || 0);
+    if (c.total && noBarcode > 0) {
+      $('#store-notice').hidden = false;
+      $('#store-notice').innerHTML = `Barcode & brand sudah diambil untuk <b>${num(c.with_detail)}</b> dari ${num(c.total)} produk. ` +
+        `Sisanya diambil bertahap ${num(s.detail_checks)} produk per putaran (±${Math.ceil(noBarcode / Math.max(1, s.detail_checks))} putaran lagi).`;
+    } else {
+      $('#store-notice').hidden = !!c.total || status.running;
+      $('#store-notice').innerHTML = `Belum ada data. Klik <b>Jalankan sekarang</b> untuk mengambil semua produk Alfagift dengan harga toko akun (±3–4 menit).`;
+    }
 
     // Selama crawler berjalan, perbarui otomatis
     clearTimeout(pollTimer);
@@ -99,7 +106,7 @@
   $('#run-btn').onclick = async () => {
     $('#run-btn').disabled = true;
     const r = await api('/api/run', { method: 'POST' });
-    toast(r.started ? 'Crawler dimulai' : 'Crawler sudah berjalan');
+    toast(r.started ? 'Crawler dimulai' : (r.reason || 'Crawler sudah berjalan'), !r.started && !!r.reason);
     setTimeout(loadStatus, 500);
   };
 
@@ -141,12 +148,12 @@
         const ch = p.last_change && p.prev_price != null ? p.final_price - p.prev_price : 0;
         return `<tr data-sku="${esc(p.sku)}">
           <td>${p.image ? `<img class="thumb" src="${esc(p.image)}" loading="lazy" alt="">` : ''}</td>
-          <td><div class="pname">${esc(p.name)}</div><div class="pmeta">ID ${esc(p.sku)}</div></td>
+          <td><div class="pname">${esc(p.name)}</div><div class="pmeta">${p.brand ? esc(p.brand) + ' · ' : ''}ID ${esc(p.sku)}</div></td>
           <td class="num">${rp(p.final_price)}${p.discount_pct > 0 ? `<div class="strike">${rp(p.price)}</div>` : ''}
             ${ch ? `<div class="${ch > 0 ? 'up' : 'down'}">${ch > 0 ? '▲' : '▼'} ${rp(Math.abs(ch))}</div>` : ''}</td>
           <td class="num">${p.discount_pct > 0 ? `<span class="badge disc">-${p.discount_pct}%</span>` : ''}</td>
           <td>${stockCell(p)}</td>
-          <td class="pmeta">${esc(p.plu || '')}</td>
+          <td class="pmeta">${esc(p.plu || '')}${p.barcode ? `<div>${esc(p.barcode)}</div>` : ''}</td>
           <td class="cat-cell">${esc(p.category_name || '')}</td>
           <td class="pmeta">${ago(p.last_seen)}</td></tr>`;
       }).join('');
@@ -270,6 +277,8 @@
           <div class="kv">
             <div>SKU</div><div>${esc(p.sku)}</div>
             <div>PLU</div><div>${esc(p.plu) || '–'}</div>
+            <div>Barcode</div><div>${esc(p.barcode) || (p.detail_checked ? '–' : '<span class="muted">belum diambil</span>')}</div>
+            <div>Brand</div><div>${esc(p.brand) || '–'}</div>
             <div>Kategori</div><div>${esc(p.category_name) || '–'}</div>
             <div>Stok</div><div>${p.in_stock ? 'Tersedia' : 'Habis'}</div>
             <div>Stok ${esc(city() || 'kota')}</div><div>${storeList(p)}</div>
@@ -333,6 +342,7 @@
   }
   $('#s-time-add').onclick = () => {
     const t = $('#s-time-new').value;
+    if (t && (t >= '23:00' || t < '06:00')) { toast('Jam 23.00–06.00 adalah downtime Alfagift', true); return; }
     if (t && !schedule.includes(t)) schedule.push(t);
     renderSchedule();
   };
@@ -357,23 +367,26 @@
     renderSchedule();
     $('#s-delay').value = status.settings.delay;
     $('#s-max').value = status.settings.max_requests;
+    $('#s-detail').value = status.settings.detail_checks;
     updateEstimate();
   }
 
   function updateEstimate() {
-    const d = +$('#s-delay').value || 3, m = +$('#s-max').value || 150;
-    $('#s-estimate').textContent = `Seluruh katalog butuh ±60 request (200 produk/request), ±${Math.round(d * 60 / 60)} menit. ` +
-      `Batas ${num(m)} request ≈ maks. ${Math.round(d * m / 60)} menit per putaran.`;
+    const d = +$('#s-delay').value || 3, k = +$('#s-detail').value || 0;
+    $('#s-estimate').textContent = `Seluruh katalog butuh ±50 request listing (±${Math.round(d * 50 / 60)} menit) + ${num(k)} ambil barcode ` +
+      `(±${Math.round(d * k / 60)} menit). Barcode cukup diambil sekali per produk.`;
   }
   $('#s-delay').addEventListener('input', updateEstimate);
   $('#s-max').addEventListener('input', updateEstimate);
+  $('#s-detail').addEventListener('input', updateEstimate);
 
   $('#save-cats').onclick = async () => {
     try {
       await api('/api/settings', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ categories: [...document.querySelectorAll('#cat-list input:checked')].map(x => x.value),
-          delay: +$('#s-delay').value, max_requests: +$('#s-max').value, schedule, schedule_on: $('#s-sched-on').checked }),
+          delay: +$('#s-delay').value, max_requests: +$('#s-max').value, detail_checks: +$('#s-detail').value,
+          schedule, schedule_on: $('#s-sched-on').checked }),
       });
       toast('Pengaturan disimpan');
       loadStatus();

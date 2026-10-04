@@ -37,6 +37,21 @@ CATS_CACHE = db.DATA_DIR / 'categories.json'
 SESSION = db.DATA_DIR / 'session.json'    # token + toko (token berlaku ±30 hari)
 
 
+# Alfagift downtime 23.00–06.00: API tidak bisa dipakai dan harga kembali normal
+# (tanpa promo) — crawl di jam itu akan mencatat harga yang salah.
+BLACKOUT = (dt.time(23, 0), dt.time(6, 0))
+
+
+def in_blackout(t=None):
+    t = (t or dt.datetime.now()).time()
+    start, end = BLACKOUT
+    return t >= start or t < end
+
+
+class Blackout(Exception):
+    """Memasuki jam downtime Alfagift — crawl dihentikan."""
+
+
 class Blocked(Exception):
     """Server menolak akses — jangan dilanjutkan."""
 
@@ -237,6 +252,9 @@ def acquire_lock():
 
 
 def crawl(trigger='manual', log=print):
+    if in_blackout():
+        log('Jam downtime Alfagift (23.00–06.00) — crawl tidak dijalankan.')
+        return None
     if not acquire_lock():
         log('Crawler sudah berjalan.')
         return None
@@ -270,6 +288,10 @@ def _crawl(con, trigger, log):
 
     try:
         return _run(con, s, stats, log, finish)
+    except Blackout:
+        con.commit()
+        return finish('limit', f'Dihentikan otomatis pukul {dt.datetime.now():%H.%M}: memasuki jam downtime Alfagift '
+                               f'(23.00–06.00). {stats["products"]} produk sudah tersimpan.')
     except Blocked as e:
         con.rollback()
         return finish('blocked', f'Dihentikan: {e}. Coba lagi nanti atau kurangi jumlah request.')
@@ -285,8 +307,10 @@ def _run(con, s, stats, log, finish):
     limit = max(1, int(s['max_requests']))
     today, run_start = dt.date.today().isoformat(), now()
 
-    def call(fn):
-        if stats['requests'] >= limit:
+    def call(fn, budget=True):
+        if in_blackout():
+            raise Blackout()
+        if budget and stats['requests'] >= limit:
             raise _Budget()
         if stats['requests']:
             time.sleep(delay)
@@ -349,6 +373,7 @@ def _run(con, s, stats, log, finish):
                                f'supaya satu putaran mencakup semua kategori.')
 
     note = f" Dilewati (ditolak server Alfagift): {', '.join(skipped)}." if skipped else ''
+    note += _details(con, s, stats, call, log)
     if not picked:
         # Pemindaian lengkap → produk yang tidak muncul lagi = tidak dijual lagi di toko ini
         # (kecuali produk dari kategori yang gagal dipindai)
@@ -361,6 +386,36 @@ def _run(con, s, stats, log, finish):
             note += f' {gone} produk tidak lagi tersedia.'
     return finish('done', f"{store_label} ({sess['address']}): {len(seen)} produk dipindai, "
                           f"{stats['stock_checks']} tersedia.{note}")
+
+
+def _details(con, s, stats, call, log):
+    """Ambil barcode & brand dari detail produk (1 request/produk, sekali per produk).
+    Produk yang tersedia di toko didahulukan. Return catatan untuk pesan run."""
+    budget = int(s.get('detail_checks') or 0)
+    if budget <= 0:
+        return ''
+    skus = [r['sku'] for r in con.execute(
+        """SELECT sku FROM products WHERE detail_checked IS NULL
+           ORDER BY in_stock DESC, discount_pct DESC LIMIT ?""", (budget,))]
+    done = 0
+    for sku in skus:
+        try:
+            d = call(lambda: api(f'/v2/products/{sku}'), budget=False)
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            d = {}   # produk sudah dihapus dari Alfagift
+        pd = (d or {}).get('productDetail') or {}
+        con.execute('UPDATE products SET barcode=?, brand=COALESCE(NULLIF(?, \'\'), brand), detail_checked=? WHERE sku=?',
+                    (str(pd.get('barcode') or '') or None, (pd.get('brandName') or '').strip(' -'), now(), sku))
+        done += 1
+        if done % 25 == 0:
+            con.commit()
+            log(f'Detail: {done}/{len(skus)}')
+    con.commit()
+    stats['details'] = done
+    left = con.execute('SELECT COUNT(*) FROM products WHERE detail_checked IS NULL').fetchone()[0]
+    return f" Barcode diambil untuk {done} produk" + (f", {left} belum." if left else ', semua lengkap.')
 
 
 if __name__ == '__main__':

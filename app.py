@@ -72,9 +72,9 @@ def query_products(con, q):
     where, args = [], []
     city = db.get_settings(con).get('city') or ''
     if q.get('q'):
-        where.append('(name LIKE ? OR sku LIKE ? OR brand LIKE ?)')
+        where.append('(name LIKE ? OR sku LIKE ? OR brand LIKE ? OR barcode LIKE ? OR plu LIKE ?)')
         like = f"%{q['q']}%"
-        args += [like, like, like]
+        args += [like] * 5
     if q.get('cat'):
         # filter per nama kategori (termasuk subkategorinya): "Rumah Tangga" / "Rumah Tangga › Pembersih"
         where.append("(category_name = ? OR category_name LIKE ? ESCAPE '\\')")
@@ -179,8 +179,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     new['delay'] = min(60.0, max(1.0, float(b['delay'])))
                 if 'max_requests' in b:
                     new['max_requests'] = min(5000, max(1, int(b['max_requests'])))
+                if 'detail_checks' in b:
+                    new['detail_checks'] = min(5000, max(0, int(b['detail_checks'])))
                 if 'schedule' in b:
                     times = sorted({dt.time.fromisoformat(str(t)[:5]).strftime('%H:%M') for t in b['schedule']})
+                    bad = [t for t in times if crawler.in_blackout(dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(t)))]
+                    if bad:
+                        raise ValueError(f"Jam {', '.join(bad)} termasuk downtime Alfagift (23.00–06.00)")
                     if len(times) > 12:
                         raise ValueError('Maksimal 12 jadwal per hari')
                     new['schedule'] = times
@@ -189,6 +194,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 db.set_settings(con, **new)
                 return self._send(200, {'ok': True, 'settings': db.get_settings(con)})
             if path == '/api/run':
+                if crawler.in_blackout():
+                    return self._send(200, {'started': False, 'reason': 'Jam downtime Alfagift (23.00–06.00) — coba lagi setelah 06.00.'})
                 return self._send(200, {'started': start_crawl()})
             self._send(404, {'error': 'not found'})
         except (ValueError, TypeError) as e:
@@ -203,11 +210,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             counts = con.execute("""SELECT COUNT(*) total, SUM(in_stock) in_stock, SUM(discount_pct > 0) discounted,
                                       SUM(last_change >= date('now', '-7 day')) changed_7d,
                                       SUM(city_name = ? AND city_qty > 0) in_city,
-                                      SUM(in_stock = 1 AND city_name = ? AND city_checked IS NOT NULL) city_checked
+                                      SUM(in_stock = 1 AND city_name = ? AND city_checked IS NOT NULL) city_checked,
+                                      SUM(detail_checked IS NOT NULL) with_detail, SUM(barcode IS NOT NULL) with_barcode
                                       FROM products""", (city, city)).fetchone()
             runs = [dict(r) for r in con.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 30')]
             return self._send(200, {'settings': s, 'running': crawler.is_running(), 'counts': dict(counts), 'runs': runs,
-                                    'next_run': next_run(s, dt.datetime.now())})
+                                    'next_run': next_run(s, dt.datetime.now()), 'blackout': crawler.in_blackout()})
         if path == '/api/categories':
             counts = {r['top']: r['n'] for r in con.execute(
                 """SELECT substr(category_name, 1, instr(category_name || ' ›', ' ›') - 1) top, COUNT(*) n
@@ -286,7 +294,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, {'product': dict(p), 'history': [dict(h) for h in hist]})
         if path == '/api/export.csv':
             where, args, order = query_products(con, q)
-            cols = ['sku', 'plu', 'name', 'category_name', 'price', 'final_price', 'discount_pct', 'in_stock',
+            cols = ['sku', 'plu', 'barcode', 'name', 'brand', 'category_name', 'price', 'final_price', 'discount_pct', 'in_stock',
                     'city_name', 'city_qty', 'city_stores', 'city_checked', 'rating', 'review_count', 'url', 'image', 'first_seen', 'last_seen', 'last_change',
                     'prev_price']
             buf = io.StringIO()
@@ -334,7 +342,7 @@ def due_slot(settings, now):
     for t in sorted(settings.get('schedule') or []):
         slot = dt.datetime.combine(now.date(), dt.time.fromisoformat(t))
         key = slot.strftime('%Y-%m-%d %H:%M')
-        if slot <= now < slot + GRACE and key > (settings.get('last_slot') or ''):
+        if slot <= now < slot + GRACE and key > (settings.get('last_slot') or '') and not crawler.in_blackout(now):
             return key
     return None
 

@@ -62,11 +62,11 @@
   <section class="tab" data-pane="products" hidden>
     <div class="notice" id="store-notice" hidden></div>
     <div class="filters">
-      <input type="search" id="f-q" placeholder="Cari nama, SKU, atau brand…">
+      <input type="search" id="f-q" placeholder="Cari nama, barcode, PLU, atau brand…">
       <label class="chk city-chk"><input type="checkbox" id="f-city"> <span id="f-city-label">Ada stok di kota</span></label>
       <select id="f-store" hidden><option value="">Semua toko</option></select>
       <select id="f-cat"><option value="">Semua kategori</option></select>
-      <select id="f-brand" hidden><option value="">Semua brand</option></select>
+      <select id="f-brand"><option value="">Semua brand</option></select>
       <select id="f-stock">
         <option value="">Semua stok</option>
         <option value="1">Tersedia</option>
@@ -88,7 +88,7 @@
       <table class="grid" id="product-table">
         <thead><tr>
           <th></th><th>Produk</th><th class="num">Harga</th><th class="num">Diskon</th>
-          <th>Stok / Toko</th><th>PLU</th><th>Kategori</th><th>Diperbarui</th>
+          <th>Stok / Toko</th><th>PLU / Barcode</th><th>Kategori</th><th>Diperbarui</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -120,9 +120,10 @@
             <input type="time" id="s-time-new" value="18:00">
             <button class="btn" id="s-time-add" type="button">+ Tambah jam</button>
           </div>
-          <div class="muted small">Setiap hari pada jam di atas (waktu server/WIB).</div>
+          <div class="muted small">Setiap hari pada jam di atas (WIB). Jam 23.00–06.00 tidak bisa — Alfagift sedang downtime dan harga kembali normal.</div>
         </div>
-        <label>Maks. request <span><input type="number" id="s-max" min="1" max="5000" step="10"> /putaran</span></label>
+        <label>Maks. request listing <span><input type="number" id="s-max" min="1" max="5000" step="10"> /putaran</span></label>
+        <label>Maks. ambil barcode <span><input type="number" id="s-detail" min="0" max="5000" step="50"> /putaran</span></label>
         <div class="muted small" id="s-estimate"></div>
         <button class="btn primary" id="save-cats">Simpan</button>
       </div>
