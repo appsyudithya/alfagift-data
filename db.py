@@ -52,7 +52,6 @@ CREATE TABLE IF NOT EXISTS products (
   barcode       TEXT,    -- dari detail produk (diambil sekali per produk)
   detail_checked TEXT    -- kapan detail (barcode/brand) diambil
 );
-CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_cat ON products(category_path);
 CREATE INDEX IF NOT EXISTS idx_products_change ON products(last_change);
 -- Satu baris per perubahan harga/stok (harga berlaku sampai baris berikutnya)
@@ -91,6 +90,8 @@ def connect():
                      ('plu', 'TEXT'), ('barcode', 'TEXT'), ('detail_checked', 'TEXT')):
         if col not in cols:
             con.execute(f'ALTER TABLE products ADD COLUMN {col} {typ}')
+    # index kolom hasil migrasi dibuat SETELAH kolomnya dijamin ada (DB lama belum punya)
+    con.execute('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)')
     if 'stock_checks' not in {r['name'] for r in con.execute('PRAGMA table_info(runs)')}:
         con.execute('ALTER TABLE runs ADD COLUMN stock_checks INTEGER DEFAULT 0')
     return con
