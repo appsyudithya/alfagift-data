@@ -222,6 +222,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                    FROM products WHERE in_stock = 1 GROUP BY top""")}
             tree = [{**c, 'n': counts.get(c['name'], 0)} for c in crawler.load_categories()]
             return self._send(200, {'tree': tree, 'watched': db.get_settings(con)['categories']})
+        if path == '/api/lookup':
+            # Untuk aplikasi lain (CSMart): cari produk per barcode (nol di depan diabaikan) atau per ID Alfagift.
+            barcodes = [b.strip().lstrip('0') for b in (q.get('barcode') or '').split(',') if b.strip().lstrip('0')][:500]
+            ids = [i.strip() for i in (q.get('id') or '').split(',') if i.strip()][:500]
+            cols = """sku AS productId, name, barcode, plu, brand, price, final_price, discount_pct, in_stock,
+                      city_qty AS stock, image, url, category_name, last_seen, detail_checked"""
+            rows = []
+            if barcodes:
+                rows += con.execute(f"""SELECT {cols} FROM products WHERE LTRIM(barcode, '0') IN
+                                       ({','.join('?' * len(barcodes))})""", barcodes).fetchall()
+            if ids:
+                rows += con.execute(f"SELECT {cols} FROM products WHERE sku IN ({','.join('?' * len(ids))})", ids).fetchall()
+            s = db.get_settings(con)
+            cov = con.execute('SELECT COUNT(*), SUM(detail_checked IS NOT NULL) FROM products').fetchone()
+            return self._send(200, {
+                'store': (s.get('account') or {}).get('store_code'), 'city': s.get('city'),
+                # cakupan barcode: kalau belum lengkap, "tidak ketemu" belum tentu berarti tidak dijual di Alfagift
+                'coverage': {'products': cov[0], 'with_detail': cov[1] or 0, 'complete': bool(cov[0]) and cov[0] == (cov[1] or 0)},
+                'items': [dict(r) for r in rows],
+            })
         if path == '/api/highlights':
             s = db.get_settings(con)
             where = ['p.in_stock = 1', 'p.discount_pct >= ?']

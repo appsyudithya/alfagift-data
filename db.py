@@ -11,7 +11,7 @@ DEFAULT_SETTINGS = {
     'categories': [],        # id kategori utama yang dipindai; kosong = semua
     'delay': 3.0,            # jeda antar request (detik)
     'max_requests': 150,     # batas request listing per putaran (±50 cukup untuk seluruh katalog)
-    'detail_checks': 600,    # batas ambil detail (barcode & brand, 1 request/produk) per putaran
+    'detail_checks': 2000,   # batas ambil detail (barcode & brand, 1 request/produk) per putaran
     'city': '',              # kota alamat akun (diisi crawler)
     'account': None,         # {address, city, store_code} dari akun Alfagift
     'schedule': ['06:30'],   # jam crawl otomatis setiap hari (waktu server)
