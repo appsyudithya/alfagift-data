@@ -222,6 +222,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                    FROM products WHERE in_stock = 1 GROUP BY top""")}
             tree = [{**c, 'n': counts.get(c['name'], 0)} for c in crawler.load_categories()]
             return self._send(200, {'tree': tree, 'watched': db.get_settings(con)['categories']})
+        if path == '/api/search-product-by-barcode':
+            # Pencarian satu produk per barcode (nol di depan diabaikan). Mengembalikan produk pertama
+            # yang cocok plus daftar lengkap `items` untuk kasus langka barcode kembar.
+            barcode = (q.get('barcode') or '').strip().lstrip('0')
+            if not barcode:
+                return self._send(400, {'error': 'parameter barcode wajib diisi'})
+            cols = """sku AS productId, name, barcode, plu, brand, price, final_price, discount_pct, in_stock,
+                      city_qty AS stock, image, url, category_name, last_seen, detail_checked"""
+            rows = con.execute(f"SELECT {cols} FROM products WHERE LTRIM(barcode, '0') = ?",
+                               (barcode,)).fetchall()
+            s = db.get_settings(con)
+            cov = con.execute('SELECT COUNT(*), SUM(detail_checked IS NOT NULL) FROM products').fetchone()
+            return self._send(200, {
+                'store': (s.get('account') or {}).get('store_code'), 'city': s.get('city'),
+                'coverage': {'products': cov[0], 'with_detail': cov[1] or 0,
+                             'complete': bool(cov[0]) and cov[0] == (cov[1] or 0)},
+                'found': bool(rows),
+                'product': dict(rows[0]) if rows else None,
+                'items': [dict(r) for r in rows],
+            })
         if path == '/api/lookup':
             # Untuk aplikasi lain (CSMart): cari produk per barcode (nol di depan diabaikan) atau per ID Alfagift.
             barcodes = [b.strip().lstrip('0') for b in (q.get('barcode') or '').split(',') if b.strip().lstrip('0')][:500]
